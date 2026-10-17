@@ -1,5 +1,6 @@
 #include<stdio.h>
 #include<errno.h>
+#include<stdlib.h>
 
 void msg(const char *msg) {
   fprintf(stderr, "%s\n", msg);

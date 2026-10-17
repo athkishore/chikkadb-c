@@ -8,11 +8,15 @@
 #include<sys/socket.h>
 #include<sys/poll.h>
 #include<errno.h>
+#include<stdlib.h>
+#include<string.h>
+#include<assert.h>
 
 #include<debug.h>
 #include<connection.h>
 
 static const size_t INITIAL_BUF_SIZE = 4096;
+static const size_t k_max_msg = 32 << 20; // Update for MongoDB Wire
 
 typedef struct {
   uint8_t *data;
@@ -112,6 +116,80 @@ static Conn *handle_accept(int fd) {
   return conn;
 }
 
+static bool try_one_request(Conn *conn) {
+  if (conn->incoming.size < 4) {
+    return false;
+  }
+  uint32_t len = 0;
+  memcpy(&len, conn->incoming.data, 4);
+  if (len > k_max_msg) {
+    msg("too long");
+    conn->want_close = true;
+    return false;
+  }
+
+  if (4 + len > conn->incoming.size) {
+    return false;
+  }
+
+  const uint8_t *request = &conn->incoming.data[4];
+
+  printf("client says: len:%d data:%.*s\n",
+    len, len < 100 ? len : 100, request
+  );
+
+  buf_append(&conn->outgoing, (const uint8_t *)&len, 4);
+  buf_append(&conn->outgoing, request, len);
+
+  buf_consume(&conn->incoming, 4 + len);
+  return true;
+}
+
+static void handle_write(Conn *conn) {
+  assert(conn->outgoing.size > 0);
+  ssize_t rv = write(conn->fd, conn->outgoing.data, conn->outgoing.size);
+  if (rv < 0 && errno == EAGAIN) {
+    return;
+  }
+
+  if (rv < 0) {
+    msg_errno("write() error");
+    conn->want_close = true;
+    return;
+  }
+
+  buf_consume(&conn->outgoing, (size_t) rv);
+
+  if (conn->outgoing.size == 0) {
+    conn->want_read = true;
+    conn->want_write = false;
+  }
+}
+
+static void handle_read(Conn *conn) {
+  uint8_t buf[64 * 1024];
+  ssize_t rv = read(conn->fd, buf, sizeof(buf));
+  if (rv < 0 && errno == EAGAIN) {
+    return;
+  }
+
+  if (rv < 0) {
+    msg_errno("read() error");
+    conn->want_close = true;
+    return;
+  }
+  buf_append(&conn->incoming, buf, (size_t)rv);
+
+  while (try_one_request(conn)) {}
+
+  if (conn->outgoing.size > 0) {
+    conn->want_read = false;
+    conn->want_write = true;
+
+    return handle_write(conn);
+  }
+}
+
 int create_socket(int port) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
@@ -132,6 +210,7 @@ int create_socket(int port) {
   }
 
   fd_set_nb(fd);
+  return fd;
 }
 
 void start_listen_nb(int fd) {
@@ -199,6 +278,7 @@ void start_listen_nb(int fd) {
       if (conn) {
         if (fd2conn_cap <= (size_t)conn->fd) {
           size_t old_cap = fd2conn_cap;
+          fd2conn_cap = conn->fd + 1;
           Conn **new_fd2conn = realloc(fd2conn, fd2conn_cap * sizeof(Conn *));
           if (!new_fd2conn) {
             die("realloc error");
