@@ -6,11 +6,11 @@
 #include<stdio.h>
 #include<fcntl.h>
 #include<sys/socket.h>
-#include<sys/poll.h>
 #include<errno.h>
 #include<stdlib.h>
 #include<string.h>
 #include<assert.h>
+#include<sys/epoll.h>
 
 #include<debug.h>
 #include<connection.h>
@@ -107,6 +107,9 @@ static Conn *handle_accept(int fd) {
   fd_set_nb(connfd);
 
   Conn *conn = malloc(sizeof(Conn));
+  if (!conn) {
+    die("malloc error");
+  }
   conn->fd = connfd;
   conn->want_read = true;
   conn->want_write = false;
@@ -145,10 +148,30 @@ static bool try_one_request(Conn *conn) {
   return true;
 }
 
-static void handle_write(Conn *conn) {
+static void conn_destroy(Conn *conn) {
+  if (!conn) return;
+  close(conn->fd);
+  buf_free(&conn->incoming);
+  buf_free(&conn->outgoing);
+  free(conn);
+}
+
+static void update_epoll(int epoll_fd, Conn *conn) {
+  struct epoll_event ev = {0};
+  ev.data.ptr = conn;
+  if (conn->want_read) ev.events |= EPOLLIN;
+  if (conn->want_write) ev.events |= EPOLLOUT;
+  ev.events |= EPOLLERR | EPOLLHUP;
+
+  if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev) < 0) {
+    die("epoll_ctl mod error");
+  }
+}
+
+static void handle_write(int epoll_fd, Conn *conn) {
   assert(conn->outgoing.size > 0);
   ssize_t rv = write(conn->fd, conn->outgoing.data, conn->outgoing.size);
-  if (rv < 0 && errno == EAGAIN) {
+  if (rv < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
     return;
   }
 
@@ -163,13 +186,14 @@ static void handle_write(Conn *conn) {
   if (conn->outgoing.size == 0) {
     conn->want_read = true;
     conn->want_write = false;
+    update_epoll(epoll_fd, conn);
   }
 }
 
-static void handle_read(Conn *conn) {
+static void handle_read(int epoll_fd, Conn *conn) {
   uint8_t buf[64 * 1024];
   ssize_t rv = read(conn->fd, buf, sizeof(buf));
-  if (rv < 0 && errno == EAGAIN) {
+  if (rv < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
     return;
   }
 
@@ -178,6 +202,11 @@ static void handle_read(Conn *conn) {
     conn->want_close = true;
     return;
   }
+  if (rv == 0) {
+    conn->want_close = true;
+    return;
+  }
+  
   buf_append(&conn->incoming, buf, (size_t)rv);
 
   while (try_one_request(conn)) {}
@@ -185,8 +214,8 @@ static void handle_read(Conn *conn) {
   if (conn->outgoing.size > 0) {
     conn->want_read = false;
     conn->want_write = true;
-
-    return handle_write(conn);
+    update_epoll(epoll_fd, conn);
+    handle_write(epoll_fd, conn);
   }
 }
 
@@ -213,119 +242,72 @@ int create_socket(int port) {
   return fd;
 }
 
-void start_listen_nb(int fd) {
-  int rv = listen(fd, SOMAXCONN);
+void start_listen_nb(int listen_fd) {
+  int rv = listen(listen_fd, SOMAXCONN);
   if (rv) {
     die("listen()");
   }
 
-  size_t fd2conn_cap = 0;
-  Conn **fd2conn = NULL;
+  int epoll_fd = epoll_create1(0);
+  if (epoll_fd < 0) {
+    die("epoll_create1()");
+  }
 
-  struct pollfd *poll_args = NULL;
-  size_t poll_args_cap = 0;
+  struct epoll_event ev = {0};
+  ev.events = EPOLLIN;
+  ev.data.fd = listen_fd;
+  if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &ev) < 0) {
+    die("epoll_ctl add listen_fd error");
+  }
+
+  const int MAX_EVENTS = 64;
+  struct epoll_event events[MAX_EVENTS];
 
   while (true) {
-    size_t poll_args_size = 0;
-    size_t required_poll_cap = 1;
-
-    for (size_t i = 0; i < fd2conn_cap; i++) {
-      if (fd2conn[i]) {
-        required_poll_cap++;
-      }
+    int nready = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+    if (nready < 0) {
+      if (errno == EINTR) continue;
+      die("epoll_wait()");
     }
 
-    if (poll_args_cap < required_poll_cap) {
-      poll_args_cap = required_poll_cap > 16 ? required_poll_cap * 2 : 16;
-      struct pollfd *new_poll_args = realloc(poll_args, poll_args_cap * sizeof(struct pollfd));
-      if (!new_poll_args) {
-        die("realloc error");
-      }
-      poll_args = new_poll_args;
-    }
-
-    poll_args[poll_args_size++] = (struct pollfd){fd, POLLIN, 0};
-
-    for (size_t i = 0; i < fd2conn_cap; ++i) {
-      Conn *conn = fd2conn[i];
-
-      if (!conn) {
-        continue;
-      }
-
-      struct pollfd pfd = {conn->fd, POLLERR, 0};
-      if (conn->want_read) {
-        pfd.events |= POLLIN;
-      }
-
-      if (conn->want_write) {
-        pfd.events |= POLLOUT;
-      }
-
-      poll_args[poll_args_size++] = pfd;
-    }
-
-    int rv = poll(poll_args, (nfds_t)poll_args_size, -1);
-    if (rv < 0 && errno == EINTR) {
-      continue;
-    }
-    if (rv < 0) {
-      die("poll");
-    }
-
-    if (poll_args[0].revents) {
-      Conn *conn = handle_accept(fd);
-      if (conn) {
-        if (fd2conn_cap <= (size_t)conn->fd) {
-          size_t old_cap = fd2conn_cap;
-          fd2conn_cap = conn->fd + 1;
-          Conn **new_fd2conn = realloc(fd2conn, fd2conn_cap * sizeof(Conn *));
-          if (!new_fd2conn) {
-            die("realloc error");
-          }
-          fd2conn = new_fd2conn;
-          for (size_t i = old_cap; i < fd2conn_cap; ++i) {
-            fd2conn[i] = NULL;
+    for (int i = 0; i < nready; ++i) {
+      if (events[i].data.fd == listen_fd) {
+        Conn *conn = handle_accept(listen_fd);
+        if (conn) {
+          struct epoll_event conn_ev = {0};
+          conn_ev.events = EPOLLIN | EPOLLERR | EPOLLHUP;
+          conn_ev.data.ptr = conn;
+          if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn->fd, &conn_ev) < 0) {
+            die("epoll_ctl add conn error");
           }
         }
-        assert(!fd2conn[conn->fd]);
-        fd2conn[conn->fd] = conn;
-      }
-    }
+      } else {
+        Conn *conn = (Conn *)events[i].data.ptr;
+        uint32_t revents = events[i].events;
+        
+        if (revents & (EPOLLERR | EPOLLHUP)) {
+          conn->want_close = true;
+        }
 
-    for (size_t i = 1; i < poll_args_size; ++i) {
-      uint32_t ready = poll_args[i].revents;
-      if (ready == 0) {
-        continue;
-      }
+        if (!conn->want_close && (revents & EPOLLIN)) {
+          assert(conn->want_read);
+          handle_read(epoll_fd, conn);
+        }
 
-      int fd_idx = poll_args[i].fd;
-      if (fd_idx < 0 || (size_t)fd_idx >= fd2conn_cap) {
-        continue;
-      }
+        if (!conn->want_close && (revents & EPOLLOUT)) {
+          assert(conn->want_write);
+          handle_write(epoll_fd, conn);
+        }
 
-      Conn *conn = fd2conn[poll_args[i].fd];
-      if (!conn) continue;
-
-      if (ready & POLLIN) {
-        assert(conn->want_read);
-        handle_read(conn);
-      }
-      if (ready & POLLOUT) {
-        assert(conn->want_write);
-        handle_write(conn);
-      }
-
-      if ((ready & POLLERR) || conn->want_close) {
-        (void)close(conn->fd);
-        fd2conn[conn->fd] = NULL;
-        buf_free(&conn->incoming);
-        buf_free(&conn->outgoing);
-        free(conn);
+        if (conn->want_close) {
+          if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL) < 0) {
+            // Ignore if already closed
+          }
+          conn_destroy(conn);
+        }
       }
     }
   }
 
-  free(poll_args);
-  free(fd2conn);
+  close(epoll_fd);
 }
