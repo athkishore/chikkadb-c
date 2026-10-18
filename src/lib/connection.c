@@ -33,6 +33,11 @@ typedef struct {
   Buffer outgoing;
 } Conn;
 
+typedef struct {
+  uint32_t len;
+  uint8_t *data;
+} Message;
+
 static void fd_set_nb(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -119,6 +124,22 @@ static Conn *handle_accept(int fd) {
   return conn;
 }
 
+static int get_response(const Message *request_msg, Message *response_msg) {
+  if (request_msg->len == 0) {
+    return -1; // TODO: Assign enumerated error code
+  }
+
+  response_msg->len = request_msg->len;
+
+  response_msg->data = malloc(sizeof(uint8_t) * response_msg->len);
+  if (!response_msg->data) {
+    return -1; // TODO: Assign enumerated error code
+  }
+  memcpy(response_msg->data, request_msg->data, response_msg->len);
+  return 0;
+}
+
+
 static bool try_one_request(Conn *conn) {
   if (conn->incoming.size < 4) {
     return false;
@@ -141,8 +162,19 @@ static bool try_one_request(Conn *conn) {
     len, len < 100 ? len : 100, request
   );
 
-  buf_append(&conn->outgoing, (const uint8_t *)&len, 4);
-  buf_append(&conn->outgoing, request, len);
+  Message request_msg = {len, (uint8_t *)request};
+
+  Message response_msg = {0, NULL};
+
+  int rv = get_response(&request_msg, &response_msg);
+  if (rv < 0) {
+    msg("get_response error");
+    return false;
+  } 
+
+  buf_append(&conn->outgoing, (const uint8_t *)&response_msg.len, 4);
+  buf_append(&conn->outgoing, response_msg.data, response_msg.len);
+  free(response_msg.data);
 
   buf_consume(&conn->incoming, 4 + len);
   return true;
