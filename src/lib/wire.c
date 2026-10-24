@@ -1,93 +1,45 @@
 #include<stdint.h>
-#include<unistd.h>
-#include<stdbool.h>
+#include<string.h>
+#include<stdlib.h>
 
-typedef struct {
-  // These are i32 and not u32 to match the definitions in the
-  // MongoDB wire protocol
-  int32_t message_length; 
-  int32_t request_id;
-  int32_t response_to;
-  int32_t op_code;
-} MessageHeader;
+#include<wire.h>
 
-typedef struct {
-  int32_t flags;
-  const char* full_collection_name;
-  size_t full_collection_name_len;
-  int32_t number_to_skip;
-  int32_t number_to_return;
-  const uint8_t* query;
-  size_t query_len;
-  const uint8_t* return_fields_selector;
-  size_t return_fields_selector_len;
-  bool has_return_fields_selector;
-} OpQueryPayload;
-
-typedef struct {
-  int32_t response_flags;
-  int64_t cursor_id;
-  int32_t starting_from;
-  int32_t number_returned;
-  const uint8_t* documents_buf;
-  size_t documents_buf_len;
-} OpReplyPayload;
-
-typedef enum {
-  SECTION_KIND_0 = 0,
-  SECTION_KIND_1 = 1
-} SectionKind;
-
-typedef struct {
-  const uint8_t* document;
-  size_t document_len;
-} OpMsgPayloadSection_Kind0;
-
-typedef struct {
-  int32_t size;
-  const char* document_sequence_identifier;
-  size_t document_sequence_identifier_len;
-  const uint8_t* documents_buf;
-  size_t documents_buf_len;
-} OpMsgPayloadSection_Kind1;
-
-typedef struct {
-  SectionKind section_kind;
-  union {
-    OpMsgPayloadSection_Kind0 kind0_section;
-    OpMsgPayloadSection_Kind1 kind1_section;
-  } section;
-} OpMsgPayloadSection;
- 
-typedef struct {
-  uint32_t flag_bits;
-  OpMsgPayloadSection* sections;
-  uint32_t checksum;
-  bool has_checksum;
-} OpMsgPayload;
-
-typedef enum {
-  OP_QUERY = 2004,
-  OP_REPLY = 1,
-  OP_MSG = 2013
-} OpCode;
-
-typedef struct {
-  MessageHeader header;
-  OpCode op_code;
-  union {
-    OpQueryPayload query;
-    OpReplyPayload reply;
-    OpMsgPayload msg;
-  } payload;
-} WireMessage;
 
 
 // TODO: Enumerate error codes
-int decode_wire_message(const uint8_t *message_buf, size_t message_buf_len, WireMessage **out_message) {
+WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t message_buf_len, DeserializeError *out_error) {
+  DeserializeError dummy_error;
+  if (out_error == NULL) {
+    out_error = &dummy_error;
+  }
   
+  WireMessage *wire_msg = malloc(sizeof(WireMessage));
+  if (!wire_msg) {
+    *out_error = DESERIALIZE_ERROR;
+    return NULL;
+  }
+
+  if (message_buf_len < 16) {
+    *out_error = DESERIALIZE_ERROR;
+    return NULL;
+  }
+
+  const uint8_t *cursor = message_buf;
+  memcpy(&wire_msg->header.message_length, cursor, 4);
+  cursor += 4;
+
+  memcpy(&wire_msg->header.request_id, cursor, 4);
+  cursor += 4;
+
+  memcpy(&wire_msg->header.response_to, cursor, 4);
+  cursor += 4;
+
+  memcpy(&wire_msg->header.op_code, cursor, 4);
+  cursor += 4;
+
+  return wire_msg;
 }
 
-void free_wire_message(WireMessage *message) {
+void wire_message_free(WireMessage *message) {
 
 }

@@ -14,6 +14,7 @@
 
 #include<debug.h>
 #include<connection.h>
+#include<wire.h>
 
 static const size_t INITIAL_BUF_SIZE = 4096;
 static const size_t k_max_msg = 32 << 20; // Update for MongoDB Wire
@@ -166,14 +167,38 @@ static bool try_one_request(Conn *conn) {
 
   Message response_msg = {0, NULL};
 
-  int rv = get_response(&request_msg, &response_msg);
-  if (rv < 0) {
-    msg("get_response error");
-    return false;
-  } 
+  // int rv = get_response(&request_msg, &response_msg);
+  // if (rv < 0) {
+    // msg("get_response error");
+    // return false;
+  // } 
 
-  buf_append(&conn->outgoing, (const uint8_t *)&response_msg.len, 4);
-  buf_append(&conn->outgoing, response_msg.data, response_msg.len);
+  WireMessage *wire_msg = wire_message_new_from_buf(request_msg.data, request_msg.len, NULL);
+
+
+  char buffer[256];
+  int rv = snprintf(
+    buffer,
+    sizeof(buffer), 
+    "message_length: %d, request_id: %d, response_to: %d, op_code: %d",
+    wire_msg->header.message_length,
+    wire_msg->header.request_id,
+    wire_msg->header.response_to,
+    wire_msg->header.op_code
+  );
+
+  if (rv < 0 || (size_t)rv >= sizeof(buffer)) {
+    // handle error
+  }
+
+  uint32_t buffer_len = (uint32_t)rv;
+
+  // buf_append(&conn->outgoing, (const uint8_t *)&response_msg.len, 4);
+  // buf_append(&conn->outgoing, response_msg.data, response_msg.len);
+  
+  buf_append(&conn->outgoing, (const uint8_t *)&buffer_len, 4);
+  buf_append(&conn->outgoing, buffer, buffer_len);
+  
   free(response_msg.data);
 
   buf_consume(&conn->incoming, 4 + len);
