@@ -153,28 +153,11 @@ static bool try_one_request(Conn *conn) {
     return false;
   }
 
-  if (4 + len > conn->incoming.size) {
+  if (len > conn->incoming.size) {
     return false;
   }
 
-  const uint8_t *request = &conn->incoming.data[4];
-
-  printf("client says: len:%d data:%.*s\n",
-    len, len < 100 ? len : 100, request
-  );
-
-  Message request_msg = {len, (uint8_t *)request};
-
-  Message response_msg = {0, NULL};
-
-  // int rv = get_response(&request_msg, &response_msg);
-  // if (rv < 0) {
-    // msg("get_response error");
-    // return false;
-  // } 
-
-  WireMessage *wire_msg = wire_message_new_from_buf(request_msg.data, request_msg.len, NULL);
-
+  WireMessage *wire_msg = wire_message_new_from_buf(conn->incoming.data, len, NULL);
 
   char buffer[256];
   int rv = snprintf(
@@ -186,21 +169,18 @@ static bool try_one_request(Conn *conn) {
     wire_msg->header.response_to,
     wire_msg->header.op_code
   );
-
+  
   if (rv < 0 || (size_t)rv >= sizeof(buffer)) {
     // handle error
   }
 
   uint32_t buffer_len = (uint32_t)rv;
+  printf("%d", buffer_len);
+  printf("%.s", buffer);
 
-  // buf_append(&conn->outgoing, (const uint8_t *)&response_msg.len, 4);
-  // buf_append(&conn->outgoing, response_msg.data, response_msg.len);
-  
   buf_append(&conn->outgoing, (const uint8_t *)&buffer_len, 4);
   buf_append(&conn->outgoing, buffer, buffer_len);
   
-  free(response_msg.data);
-
   buf_consume(&conn->incoming, 4 + len);
   return true;
 }
