@@ -163,11 +163,12 @@ static bool try_one_request(Conn *conn) {
   int rv = snprintf(
     buffer,
     sizeof(buffer), 
-    "message_length: %d, request_id: %d, response_to: %d, op_code: %d",
+    "message_length: %d, request_id: %d, response_to: %d, op_code: %d, flag_bits: %d",
     wire_msg->header.message_length,
     wire_msg->header.request_id,
     wire_msg->header.response_to,
-    wire_msg->header.op_code
+    wire_msg->header.op_code,
+    wire_msg->payload.msg.flag_bits
   );
   
   if (rv < 0 || (size_t)rv >= sizeof(buffer)) {

@@ -86,11 +86,24 @@ typedef struct {
 } WireMessage;
 
 typedef enum {
-  DESERIALIZE_SUCCESS = 0,
-  DESERIALIZE_ERROR = 1,
-} DeserializeError;
+  WIRE_DESERIALIZE_SUCCESS = 0,
+  WIRE_INVALID_BUFFER = 1,
+  WIRE_MISSING_BYTES = 2,
+  WIRE_INVALID_OPCODE = 3,
+} WireDeserializeError;
 
-WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t message_buf_len, DeserializeError *out_error);
+typedef enum {
+  OP_MSG_DESERIALIZE_SUCCESS = 0,
+  OP_MSG_INCOMPLETE_PAYLOAD = 1,
+} OpMsgDeserializeError;
+
+typedef enum {
+  OP_MSG_SECTION_DESERIALIZE_SUCCESS = 0,
+  OP_MSG_SECTION_INCOMPLETE_SECTION = 1,
+  OP_MSG_SECTION_MALLOC_ERROR,
+} OpMsgSectionDeserializeError;
+
+WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t message_buf_len, WireDeserializeError *out_error);
 
 #endif
 
