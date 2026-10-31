@@ -157,7 +157,14 @@ static bool try_one_request(Conn *conn) {
     return false;
   }
 
-  WireMessage *wire_msg = wire_message_new_from_buf(conn->incoming.data, len, NULL);
+  WireDeserializeError err;
+  WireMessage *wire_msg = wire_message_new_from_buf(conn->incoming.data, len, &err);
+
+  if (err) {
+    printf("Error: %d\n", err);
+    // What to do with buf?
+    // return false;
+  }
 
   char buffer[256];
   int rv = snprintf(

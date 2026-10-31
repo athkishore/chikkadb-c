@@ -24,8 +24,6 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
     }
     uint32_t size;
     memcpy(&size, cursor, 4);
-    cursor += 4;
-    remaining -= 4;
 
     if (size > remaining) {
       err = OP_MSG_SECTION_INCOMPLETE_SECTION;
@@ -70,8 +68,6 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
         }
         uint32_t size;
         memcpy(&size, cursor, 4);
-        cursor += 4;
-        remaining -= 4;
 
         if (size > remaining) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
@@ -105,7 +101,7 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
         cursor += 4;
         remaining -= 4;
 
-        if (section_size > remaining) {
+        if (section_size - 4 > remaining) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
           break;
         }
