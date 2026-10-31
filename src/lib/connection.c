@@ -125,20 +125,20 @@ static Conn *handle_accept(int fd) {
   return conn;
 }
 
-static int get_response(const Message *request_msg, Message *response_msg) {
-  if (request_msg->len == 0) {
-    return -1; // TODO: Assign enumerated error code
-  }
+// static int get_response(const Message *request_msg, Message *response_msg) {
+//   if (request_msg->len == 0) {
+//     return -1; // TODO: Assign enumerated error code
+//   }
 
-  response_msg->len = request_msg->len;
+//   response_msg->len = request_msg->len;
 
-  response_msg->data = malloc(sizeof(uint8_t) * response_msg->len);
-  if (!response_msg->data) {
-    return -1; // TODO: Assign enumerated error code
-  }
-  memcpy(response_msg->data, request_msg->data, response_msg->len);
-  return 0;
-}
+//   response_msg->data = malloc(sizeof(uint8_t) * response_msg->len);
+//   if (!response_msg->data) {
+//     return -1; // TODO: Assign enumerated error code
+//   }
+//   memcpy(response_msg->data, request_msg->data, response_msg->len);
+//   return 0;
+// }
 
 
 static bool try_one_request(Conn *conn) {
@@ -180,7 +180,7 @@ static bool try_one_request(Conn *conn) {
   printf("%.s", buffer);
 
   buf_append(&conn->outgoing, (const uint8_t *)&buffer_len, 4);
-  buf_append(&conn->outgoing, buffer, buffer_len);
+  buf_append(&conn->outgoing, (const uint8_t *)buffer, buffer_len);
   
   buf_consume(&conn->incoming, 4 + len);
   return true;

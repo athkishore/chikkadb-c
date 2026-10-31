@@ -5,46 +5,181 @@
 
 #include<wire.h>
 
-OpMsgSectionDeserializeError decode_op_msg_sections(const int8_t *cursor, size_t sections_len, WireMessage *wire_msg) {
+OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_t sections_len, WireMessage *wire_msg) {
   size_t remaining = sections_len;
 
-  while (remaining > 0) {
+  OpMsgSectionDeserializeError err = OP_MSG_SECTION_DESERIALIZE_SUCCESS;
+  int section_count = 0;
+
+  // First pass to determine the number of sections
+  while (!err && remaining > 0) {
+    uint8_t section_kind;
+    memcpy(&section_kind, cursor, 1);
+    cursor += 1;
+    remaining -= 1;
+
+    if (remaining < 4) {
+      err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+      break;
+    }
+    uint32_t size;
+    memcpy(&size, cursor, 4);
+    cursor += 4;
+    remaining -= 4;
+
+    if (size > remaining) {
+      err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+      break;
+    }
+
+    cursor += size;
+    remaining -= size;
+
+    section_count++;
+  }
+
+  if (!err) {
+    cursor -= sections_len;
+    remaining = sections_len;
+  }
+
+  if (section_count == 0) {
+    err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+    return err;
+  }
+
+  OpMsgPayloadSection *sections = malloc(section_count * sizeof(OpMsgPayloadSection));
+  if (!sections) {
+    err = OP_MSG_SECTION_MALLOC_ERROR;
+    return err;
+  }
+  
+  // Second pass to perform the deserialization
+  int section_index = 0;
+  while (!err && section_index < section_count) {
     uint8_t section_kind;
     memcpy(&section_kind, cursor, 1);
     cursor += 1;
     remaining -= 1;
 
     switch (section_kind) {
-      case 0: {
-        if (remaining < 5) {
-          return OP_MSG_SECTION_INCOMPLETE_SECTION;
+      case SECTION_KIND_0: {
+        if (remaining < 4) {
+          err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+          break;
         }
-        int32_t size;
+        uint32_t size;
         memcpy(&size, cursor, 4);
         cursor += 4;
         remaining -= 4;
 
         if (size > remaining) {
-          return OP_MSG_SECTION_INCOMPLETE_SECTION;
+          err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+          break;
         }
 
         uint8_t *document = malloc((size_t)size);
         if (!document) {
-          return OP_MSG_SECTION_MALLOC_ERROR;
+          err = OP_MSG_SECTION_MALLOC_ERROR;
+          break;
         }
 
         memcpy(document, cursor, size);
+        cursor += size;
+        remaining -= size;
 
-        OpMsgPayloadSection *section = malloc(sizeof(OpMsgPayloadSection));
-        section->section_kind = SECTION_KIND_0;
-        section->section.kind0_section.document = document;
-        section->section.kind0_section.document_len = size;
+        (sections + section_index)->section_kind = SECTION_KIND_0;
+        (sections + section_index)->section.kind0_section.document = document;
+        (sections + section_index)->section.kind0_section.document_len = size;
+
+        break;
+      }
+
+      case SECTION_KIND_1: {
+        if (remaining < 4) {
+          err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+          break;
+        }
+        uint32_t section_size;
+        memcpy(&section_size, cursor, 4);
+        cursor += 4;
+        remaining -= 4;
+
+        if (section_size > remaining) {
+          err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+          break;
+        }
+
+        size_t section_remaining = section_size - 4;
+
+        size_t document_sequence_identifier_len = strnlen((char *)cursor, section_remaining);
+        if (document_sequence_identifier_len >= section_remaining) {
+          err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+          break;
+        }
+
+        char *document_sequence_identifier = malloc(sizeof(char) * (document_sequence_identifier_len + 1));
+        if (!document_sequence_identifier) {
+          err = OP_MSG_SECTION_MALLOC_ERROR;
+          break;
+        }
+        memcpy(document_sequence_identifier, cursor, document_sequence_identifier_len + 1);
+        cursor += document_sequence_identifier_len + 1;
+        remaining -= document_sequence_identifier_len + 1;
+        section_remaining -= document_sequence_identifier_len + 1;
+
+        size_t documents_buf_len = section_remaining;
+        uint8_t *documents_buf = malloc(documents_buf_len);
+        if (!documents_buf) {
+          free(document_sequence_identifier);
+          err = OP_MSG_SECTION_MALLOC_ERROR;
+          break;
+        }
+        memcpy(documents_buf, cursor, documents_buf_len);
+        cursor += documents_buf_len;
+        remaining -= documents_buf_len;
+
+        (sections + section_index)->section_kind = SECTION_KIND_1;
+        (sections + section_index)->section.kind1_section.size = section_size;
+        (sections + section_index)->section.kind1_section.document_sequence_identifier
+          = document_sequence_identifier;
+
+        (sections + section_index)->section.kind1_section.document_sequence_identifier_len
+          = document_sequence_identifier_len;
+
+        (sections + section_index)->section.kind1_section.documents_buf = documents_buf;
+        (sections + section_index)->section.kind1_section.documents_buf_len = documents_buf_len;
+        break;
+      }
+
+      default:
+        err = OP_MSG_SECTION_INVALID_SECTION_KIND;
+        break;
+    }
+
+    if (!err) section_index++;
+  }
+
+  if (!err) {
+    wire_msg->payload.msg.sections = sections;
+  } else {
+    for (int i = 0; i < section_index; i++) {
+      if ((sections + i)->section_kind == SECTION_KIND_0) {
+        free((sections + i)->section.kind0_section.document);
+      }
+
+      if ((sections + i)->section_kind == SECTION_KIND_1) {
+        free((sections + i)->section.kind1_section.document_sequence_identifier);
+        free((sections + i)->section.kind1_section.documents_buf);
       }
     }
+    free(sections);
   }
+
+  return err;
 }
 
-OpMsgDeserializeError decode_op_msg_payload(const int8_t *cursor, size_t payload_len, WireMessage *wire_msg) {
+OpMsgDeserializeError decode_op_msg_payload(const uint8_t *cursor, size_t payload_len, WireMessage *wire_msg) {
   if (payload_len < 10) {
     return OP_MSG_INCOMPLETE_PAYLOAD;
   }
@@ -55,6 +190,9 @@ OpMsgDeserializeError decode_op_msg_payload(const int8_t *cursor, size_t payload
   wire_msg->payload.msg.flag_bits = flag_bits + 5;
 
   OpMsgSectionDeserializeError rv = decode_op_msg_sections(cursor, payload_len - 4, wire_msg);
+  if (rv) {
+    return OP_MSG_INVALID_PAYLOAD;
+  }
 
   return OP_MSG_DESERIALIZE_SUCCESS;
 }
@@ -104,6 +242,11 @@ WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t messag
       OpMsgDeserializeError rv = decode_op_msg_payload(
         cursor, message_buf_len - 16, wire_msg
       );
+      if (rv) {
+        // TODO: Streamline error conversion
+        *out_error = WIRE_INVALID_BUFFER;
+      }
+      
       fprintf(stdout, "OP_MSG\n");
       break;
 
@@ -116,6 +259,6 @@ WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t messag
   return wire_msg;
 }
 
-void wire_message_free(WireMessage *message) {
+// void wire_message_free(WireMessage *message) {
 
-}
+// }

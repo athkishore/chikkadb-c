@@ -42,15 +42,15 @@ typedef enum {
 } SectionKind;
 
 typedef struct {
-  const uint8_t* document;
+  uint8_t* document;
   size_t document_len;
 } OpMsgPayloadSection_Kind0;
 
 typedef struct {
   int32_t size;
-  const char* document_sequence_identifier;
+  char* document_sequence_identifier;
   size_t document_sequence_identifier_len;
-  const uint8_t* documents_buf;
+  uint8_t* documents_buf;
   size_t documents_buf_len;
 } OpMsgPayloadSection_Kind1;
 
@@ -65,6 +65,7 @@ typedef struct {
 typedef struct {
   uint32_t flag_bits;
   OpMsgPayloadSection* sections;
+  size_t sections_len;
   uint32_t checksum;
   bool has_checksum;
 } OpMsgPayload;
@@ -95,12 +96,14 @@ typedef enum {
 typedef enum {
   OP_MSG_DESERIALIZE_SUCCESS = 0,
   OP_MSG_INCOMPLETE_PAYLOAD = 1,
+  OP_MSG_INVALID_PAYLOAD,
 } OpMsgDeserializeError;
 
 typedef enum {
   OP_MSG_SECTION_DESERIALIZE_SUCCESS = 0,
   OP_MSG_SECTION_INCOMPLETE_SECTION = 1,
   OP_MSG_SECTION_MALLOC_ERROR,
+  OP_MSG_SECTION_INVALID_SECTION_KIND,
 } OpMsgSectionDeserializeError;
 
 WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t message_buf_len, WireDeserializeError *out_error);
