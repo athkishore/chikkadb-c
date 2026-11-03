@@ -96,7 +96,7 @@ static void buf_consume(Buffer *buf, size_t n) {
 }
 
 static Conn *handle_accept(int fd) {
-  struct sockaddr_in client_addr = {};
+  struct sockaddr_in client_addr = {0};
   socklen_t addrlen = sizeof(client_addr);
   int connfd = accept(fd, (struct sockaddr *)&client_addr, &addrlen);
   if (connfd < 0) {
@@ -273,7 +273,7 @@ int create_socket(int port) {
   int val = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
-  struct sockaddr_in addr = {};
+  struct sockaddr_in addr = {0};
   addr.sin_family = AF_INET;
   addr.sin_port = ntohs(port);
   addr.sin_addr.s_addr = ntohl(0);
