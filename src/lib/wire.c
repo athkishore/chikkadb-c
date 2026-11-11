@@ -74,19 +74,23 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
           break;
         }
 
-        uint8_t *document = malloc((size_t)size);
-        if (!document) {
-          err = OP_MSG_SECTION_MALLOC_ERROR;
-          break;
-        }
+        // uint8_t *document = malloc((size_t)size);
+        // if (!document) {
+        //   err = OP_MSG_SECTION_MALLOC_ERROR;
+        //   break;
+        // }
 
-        memcpy(document, cursor, size);
+        // memcpy(document, cursor, size);
+        // cursor += size;
+        // remaining -= size;
+
+        bson_t *document = bson_new_from_data(cursor, size);
         cursor += size;
         remaining -= size;
 
         (sections + section_index)->section_kind = SECTION_KIND_0;
         (sections + section_index)->section.kind0_section.document = document;
-        (sections + section_index)->section.kind0_section.document_len = size;
+        // (sections + section_index)->section.kind0_section.document_len = size;
 
         break;
       }
@@ -98,15 +102,16 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
         }
         uint32_t section_size;
         memcpy(&section_size, cursor, 4);
-        cursor += 4;
-        remaining -= 4;
-
-        if (section_size - 4 > remaining) {
+        if (section_size > remaining) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
           break;
         }
 
-        size_t section_remaining = section_size - 4;
+        size_t section_remaining = section_size;
+
+        cursor += 4;
+        remaining -= 4;
+        section_remaining -= 4;
 
         size_t document_sequence_identifier_len = strnlen((char *)cursor, section_remaining);
         if (document_sequence_identifier_len >= section_remaining) {
@@ -114,7 +119,7 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
           break;
         }
 
-        char *document_sequence_identifier = malloc(sizeof(char) * (document_sequence_identifier_len + 1));
+        char *document_sequence_identifier = malloc(sizeof(char) & (document_sequence_identifier_len + 1));
         if (!document_sequence_identifier) {
           err = OP_MSG_SECTION_MALLOC_ERROR;
           break;
@@ -124,16 +129,76 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
         remaining -= document_sequence_identifier_len + 1;
         section_remaining -= document_sequence_identifier_len + 1;
 
-        size_t documents_buf_len = section_remaining;
-        uint8_t *documents_buf = malloc(documents_buf_len);
-        if (!documents_buf) {
-          free(document_sequence_identifier);
+        // First pass to determine the number of documents
+        size_t doc_count = 0;
+
+        while (!err && section_remaining > 0) {
+          uint32_t doc_size;
+          memcpy(&doc_size, cursor, 4);
+          
+          if (doc_size > section_remaining) {
+            err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+            break;
+          }
+
+          cursor += doc_size;
+          remaining -= doc_size;
+          section_remaining -= doc_size;
+
+          doc_count++;
+        }
+
+        if (!err) {
+          cursor -= section_size;
+          remaining += section_size;
+          section_remaining += section_size;
+
+          cursor += 4;
+          remaining -= 4;
+          section_remaining -= 4;
+
+          cursor += document_sequence_identifier_len + 1;
+          remaining -= document_sequence_identifier_len + 1;
+          section_remaining -= document_sequence_identifier_len + 1;
+        }
+
+        bson_t **documents = malloc(sizeof(bson_t) * doc_count);
+        if (!documents) {
           err = OP_MSG_SECTION_MALLOC_ERROR;
           break;
         }
-        memcpy(documents_buf, cursor, documents_buf_len);
-        cursor += documents_buf_len;
-        remaining -= documents_buf_len;
+
+        // // Second pass to deserialize bson documents
+
+        size_t doc_index = 0;
+        while (!err && doc_index < doc_count) {
+          uint32_t doc_size;
+          memcpy(&doc_size, cursor, 4);
+
+          printf("%d\n", doc_size);
+
+          if (doc_size > section_remaining) {
+            err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+            break;
+          }
+
+          documents[doc_index] = bson_new_from_data(cursor, doc_size);
+          char *json;
+          size_t json_len;
+          json = bson_as_json(documents[doc_index], &json_len);
+          if (!json) printf("Error converting to json\n");
+          printf("%.*s\n", (int)json_len, json);
+
+          if (!documents[doc_index]) {
+            err = OP_MSG_SECTION_MALLOC_ERROR;
+            break;
+          }
+
+          cursor += doc_size;
+          remaining -= doc_size;
+          section_remaining -= doc_size;
+          doc_index++;
+        }
 
         (sections + section_index)->section_kind = SECTION_KIND_1;
         (sections + section_index)->section.kind1_section.size = section_size;
@@ -143,8 +208,9 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
         (sections + section_index)->section.kind1_section.document_sequence_identifier_len
           = document_sequence_identifier_len;
 
-        (sections + section_index)->section.kind1_section.documents_buf = documents_buf;
-        (sections + section_index)->section.kind1_section.documents_buf_len = documents_buf_len;
+        (sections + section_index)->section.kind1_section.documents = documents;
+        (sections + section_index)->section.kind1_section.documents_len = doc_count;
+        
         break;
       }
 
@@ -158,6 +224,7 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
 
   if (!err) {
     wire_msg->payload.msg.sections = sections;
+    wire_msg->payload.msg.sections_len = section_count;
   } else {
     for (int i = 0; i < section_index; i++) {
       if ((sections + i)->section_kind == SECTION_KIND_0) {
@@ -166,7 +233,7 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
 
       if ((sections + i)->section_kind == SECTION_KIND_1) {
         free((sections + i)->section.kind1_section.document_sequence_identifier);
-        free((sections + i)->section.kind1_section.documents_buf);
+        free((sections + i)->section.kind1_section.documents);
       }
     }
     free(sections);

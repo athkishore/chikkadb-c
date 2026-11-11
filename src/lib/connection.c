@@ -11,6 +11,7 @@
 #include<string.h>
 #include<assert.h>
 #include<sys/epoll.h>
+#include<bson.h>
 
 #include<debug.h>
 #include<connection.h>
@@ -164,30 +165,33 @@ static bool try_one_request(Conn *conn) {
     printf("Error: %d\n", err);
     // What to do with buf?
     // return false;
+  } else {
+    char *json;
+    size_t json_len;
+    json = bson_as_json(wire_msg->payload.msg.sections[0].section.kind0_section.document, &json_len);
+
+    buf_append(&conn->outgoing, (const uint8_t *)json, json_len);
+
+    if (wire_msg->payload.msg.sections_len > 1) {
+      for (size_t i = 1; i < wire_msg->payload.msg.sections_len; i++) {
+        char *document_sequence_identifier = 
+          wire_msg->payload.msg.sections[i].section.kind1_section.document_sequence_identifier;
+
+        size_t document_sequence_identifier_len = 
+          wire_msg->payload.msg.sections[i].section.kind1_section.document_sequence_identifier_len;
+
+        buf_append(&conn->outgoing, (const uint8_t *)document_sequence_identifier, document_sequence_identifier_len);
+
+        bson_t **documents = wire_msg->payload.msg.sections[i].section.kind1_section.documents;
+        size_t documents_len = wire_msg->payload.msg.sections[i].section.kind1_section.documents_len;
+
+        for (size_t j = 0; j < documents_len; j++) {
+          if (documents[j]) json = bson_as_json(documents[j], &json_len);
+          if (json) buf_append(&conn->outgoing, (const uint8_t *)json, json_len);
+        }
+      }
+    }
   }
-
-  char buffer[256];
-  int rv = snprintf(
-    buffer,
-    sizeof(buffer), 
-    "message_length: %d, request_id: %d, response_to: %d, op_code: %d, flag_bits: %d",
-    wire_msg->header.message_length,
-    wire_msg->header.request_id,
-    wire_msg->header.response_to,
-    wire_msg->header.op_code,
-    wire_msg->payload.msg.flag_bits
-  );
-  
-  if (rv < 0 || (size_t)rv >= sizeof(buffer)) {
-    // handle error
-  }
-
-  uint32_t buffer_len = (uint32_t)rv;
-  printf("%d", buffer_len);
-  printf("%.s", buffer);
-
-  buf_append(&conn->outgoing, (const uint8_t *)&buffer_len, 4);
-  buf_append(&conn->outgoing, (const uint8_t *)buffer, buffer_len);
   
   buf_consume(&conn->incoming, 4 + len);
   return true;

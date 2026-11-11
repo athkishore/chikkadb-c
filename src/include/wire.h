@@ -4,6 +4,7 @@
 #include<unistd.h>
 #include<stdint.h>
 #include<stdbool.h>
+#include<bson.h>
 
 typedef struct {
   // These are i32 and not u32 to match the definitions in the
@@ -42,16 +43,17 @@ typedef enum {
 } SectionKind;
 
 typedef struct {
-  uint8_t* document;
-  size_t document_len;
+  bson_t* document;
 } OpMsgPayloadSection_Kind0;
 
 typedef struct {
   int32_t size;
   char* document_sequence_identifier;
   size_t document_sequence_identifier_len;
-  uint8_t* documents_buf;
-  size_t documents_buf_len;
+  // uint8_t* documents_buf;
+  // size_t documents_buf_len;
+  bson_t** documents;
+  size_t documents_len;
 } OpMsgPayloadSection_Kind1;
 
 typedef struct {
