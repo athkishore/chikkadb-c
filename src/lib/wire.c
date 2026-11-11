@@ -74,23 +74,12 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
           break;
         }
 
-        // uint8_t *document = malloc((size_t)size);
-        // if (!document) {
-        //   err = OP_MSG_SECTION_MALLOC_ERROR;
-        //   break;
-        // }
-
-        // memcpy(document, cursor, size);
-        // cursor += size;
-        // remaining -= size;
-
         bson_t *document = bson_new_from_data(cursor, size);
         cursor += size;
         remaining -= size;
 
         (sections + section_index)->section_kind = SECTION_KIND_0;
         (sections + section_index)->section.kind0_section.document = document;
-        // (sections + section_index)->section.kind0_section.document_len = size;
 
         break;
       }
