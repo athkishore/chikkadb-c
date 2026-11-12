@@ -251,6 +251,7 @@ WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t messag
     out_error = &dummy_error;
   }
   
+  *out_error = WIRE_DESERIALIZE_SUCCESS;
   WireMessage *wire_msg = malloc(sizeof(WireMessage));
   if (!wire_msg) {
     *out_error = WIRE_INVALID_BUFFER;
@@ -307,6 +308,34 @@ WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t messag
   return wire_msg;
 }
 
-// void wire_message_free(WireMessage *message) {
+void wire_message_destroy(WireMessage *message) {
+  switch (message->op_code) {
+    case OP_MSG: {
+      if (message->payload.msg.sections) {
+        for (size_t i = 0; i < message->payload.msg.sections_len; i++) {
+          if (message->payload.msg.sections[i].section_kind == SECTION_KIND_0) {
+            if (message->payload.msg.sections[i].section.kind0_section.document) {
+              bson_destroy(message->payload.msg.sections[i].section.kind0_section.document);
+            }
+          } else if (message->payload.msg.sections[i].section_kind == SECTION_KIND_1) {
+            free(message->payload.msg.sections[i].section.kind1_section.document_sequence_identifier);
+            if (message->payload.msg.sections[i].section.kind1_section.documents) {
+              for (size_t j = 0; j < message->payload.msg.sections[i].section.kind1_section.documents_len; j++) {
+                if (message->payload.msg.sections[i].section.kind1_section.documents[j]) {
+                  bson_destroy(message->payload.msg.sections[i].section.kind1_section.documents[j]);
+                }
+              }
+              free(message->payload.msg.sections[i].section.kind1_section.documents);
+            }
+          }
+        }
+        free(message->payload.msg.sections);
+      }
 
-// }
+      free(message);
+    }
+
+    default:
+      return;
+  }
+}

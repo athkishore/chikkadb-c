@@ -109,6 +109,7 @@ typedef enum {
 } OpMsgSectionDeserializeError;
 
 WireMessage *wire_message_new_from_buf(const uint8_t *message_buf, size_t message_buf_len, WireDeserializeError *out_error);
+void wire_message_destroy(WireMessage *message);
 
 #endif
 

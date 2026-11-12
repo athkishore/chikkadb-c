@@ -126,22 +126,6 @@ static Conn *handle_accept(int fd) {
   return conn;
 }
 
-// static int get_response(const Message *request_msg, Message *response_msg) {
-//   if (request_msg->len == 0) {
-//     return -1; // TODO: Assign enumerated error code
-//   }
-
-//   response_msg->len = request_msg->len;
-
-//   response_msg->data = malloc(sizeof(uint8_t) * response_msg->len);
-//   if (!response_msg->data) {
-//     return -1; // TODO: Assign enumerated error code
-//   }
-//   memcpy(response_msg->data, request_msg->data, response_msg->len);
-//   return 0;
-// }
-
-
 static bool try_one_request(Conn *conn) {
   if (conn->incoming.size < 4) {
     return false;
@@ -169,8 +153,8 @@ static bool try_one_request(Conn *conn) {
     char *json;
     size_t json_len;
     json = bson_as_json(wire_msg->payload.msg.sections[0].section.kind0_section.document, &json_len);
-
     buf_append(&conn->outgoing, (const uint8_t *)json, json_len);
+    free(json);
 
     if (wire_msg->payload.msg.sections_len > 1) {
       for (size_t i = 1; i < wire_msg->payload.msg.sections_len; i++) {
@@ -186,13 +170,17 @@ static bool try_one_request(Conn *conn) {
         size_t documents_len = wire_msg->payload.msg.sections[i].section.kind1_section.documents_len;
 
         for (size_t j = 0; j < documents_len; j++) {
+          char *json;
+          size_t json_len;
           if (documents[j]) json = bson_as_json(documents[j], &json_len);
           if (json) buf_append(&conn->outgoing, (const uint8_t *)json, json_len);
+          free(json);
         }
       }
     }
   }
   
+  wire_message_destroy(wire_msg);
   buf_consume(&conn->incoming, len);
   return true;
 }
