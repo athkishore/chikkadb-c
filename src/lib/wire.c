@@ -7,53 +7,56 @@
 
 OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_t sections_len, WireMessage *wire_msg) {
   size_t remaining = sections_len;
-
   OpMsgSectionDeserializeError err = OP_MSG_SECTION_DESERIALIZE_SUCCESS;
   int section_count = 0;
+  int section_index = 0;
+  OpMsgPayloadSection *sections = NULL;
 
   // First pass to determine the number of sections
   while (!err && remaining > 0) {
     uint8_t section_kind;
+    if (remaining < 1) {
+      err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+      goto cleanup;
+    }
     memcpy(&section_kind, cursor, 1);
     cursor += 1;
     remaining -= 1;
 
     if (remaining < 4) {
       err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-      break;
+      goto cleanup;
     }
     uint32_t size;
     memcpy(&size, cursor, 4);
 
     if (size > remaining) {
       err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-      break;
+      goto cleanup;
     }
 
     cursor += size;
     remaining -= size;
-
     section_count++;
-  }
-
-  if (!err) {
-    cursor -= sections_len;
-    remaining = sections_len;
   }
 
   if (section_count == 0) {
     err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-    return err;
-  }
-
-  OpMsgPayloadSection *sections = malloc(section_count * sizeof(OpMsgPayloadSection));
-  if (!sections) {
-    err = OP_MSG_SECTION_MALLOC_ERROR;
-    return err;
+    goto cleanup;
   }
   
+  cursor -= sections_len;
+  remaining = sections_len;
+
+
+  sections = malloc(section_count * sizeof(OpMsgPayloadSection));
+  if (!sections) {
+    err = OP_MSG_SECTION_MALLOC_ERROR;
+    goto cleanup;
+  }
+  memset(sections, 0, section_count * sizeof(OpMsgPayloadSection));
+  
   // Second pass to perform the deserialization
-  int section_index = 0;
   while (!err && section_index < section_count) {
     uint8_t section_kind;
     memcpy(&section_kind, cursor, 1);
@@ -64,22 +67,26 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
       case SECTION_KIND_0: {
         if (remaining < 4) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-          break;
+          goto cleanup;
         }
         uint32_t size;
         memcpy(&size, cursor, 4);
 
         if (size > remaining) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-          break;
+          goto cleanup;
         }
 
         bson_t *document = bson_new_from_data(cursor, size);
+        if (!document) {
+          err = OP_MSG_SECTION_MALLOC_ERROR;
+          goto cleanup;
+        }
         cursor += size;
         remaining -= size;
 
-        (sections + section_index)->section_kind = SECTION_KIND_0;
-        (sections + section_index)->section.kind0_section.document = document;
+        sections[section_index].section_kind = SECTION_KIND_0;
+        sections[section_index].section.kind0_section.document = document;
 
         break;
       }
@@ -87,13 +94,13 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
       case SECTION_KIND_1: {
         if (remaining < 4) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-          break;
+          goto cleanup;
         }
         uint32_t section_size;
         memcpy(&section_size, cursor, 4);
         if (section_size > remaining) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-          break;
+          goto cleanup;
         }
 
         size_t section_remaining = section_size;
@@ -105,82 +112,73 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
         size_t document_sequence_identifier_len = strnlen((char *)cursor, section_remaining);
         if (document_sequence_identifier_len >= section_remaining) {
           err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-          break;
+          goto cleanup;
         }
 
         char *document_sequence_identifier = malloc(sizeof(char) & (document_sequence_identifier_len + 1));
         if (!document_sequence_identifier) {
           err = OP_MSG_SECTION_MALLOC_ERROR;
-          break;
+          goto cleanup;
         }
         memcpy(document_sequence_identifier, cursor, document_sequence_identifier_len + 1);
         cursor += document_sequence_identifier_len + 1;
         remaining -= document_sequence_identifier_len + 1;
         section_remaining -= document_sequence_identifier_len + 1;
 
+        sections[section_index].section_kind = SECTION_KIND_1;
+        sections[section_index].section.kind1_section.size = section_size;
+        sections[section_index].section.kind1_section.document_sequence_identifier = document_sequence_identifier;
+        sections[section_index].section.kind1_section.document_sequence_identifier_len = document_sequence_identifier_len;
+
         // First pass to determine the number of documents
         size_t doc_count = 0;
+        const uint8_t *temp_cursor = cursor;
+        size_t temp_remaining = section_remaining;
 
-        while (!err && section_remaining > 0) {
+        while (temp_remaining > 0) {
+          if (temp_remaining < 4) {
+            err = OP_MSG_SECTION_INCOMPLETE_SECTION;
+            goto cleanup;
+          }
           uint32_t doc_size;
           memcpy(&doc_size, cursor, 4);
           
-          if (doc_size > section_remaining) {
+          if (doc_size > temp_remaining) {
             err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-            break;
+            goto cleanup;
           }
 
-          cursor += doc_size;
-          remaining -= doc_size;
-          section_remaining -= doc_size;
-
+          temp_cursor += doc_size;
+          temp_remaining -= doc_size;
           doc_count++;
-        }
-
-        if (!err) {
-          cursor -= section_size;
-          remaining += section_size;
-          section_remaining += section_size;
-
-          cursor += 4;
-          remaining -= 4;
-          section_remaining -= 4;
-
-          cursor += document_sequence_identifier_len + 1;
-          remaining -= document_sequence_identifier_len + 1;
-          section_remaining -= document_sequence_identifier_len + 1;
         }
 
         bson_t **documents = malloc(sizeof(bson_t) * doc_count);
         if (!documents) {
           err = OP_MSG_SECTION_MALLOC_ERROR;
-          break;
+          goto cleanup;
         }
+        for (size_t i = 0; i < doc_count; i++) documents[i] = NULL;
+
+        sections[section_index].section.kind1_section.documents = documents;
+        sections[section_index].section.kind1_section.documents_len = doc_count;
 
         // // Second pass to deserialize bson documents
 
         size_t doc_index = 0;
-        while (!err && doc_index < doc_count) {
+        while (doc_index < doc_count) {
           uint32_t doc_size;
           memcpy(&doc_size, cursor, 4);
 
-          printf("%d\n", doc_size);
-
           if (doc_size > section_remaining) {
             err = OP_MSG_SECTION_INCOMPLETE_SECTION;
-            break;
+            goto cleanup;
           }
 
           documents[doc_index] = bson_new_from_data(cursor, doc_size);
-          char *json;
-          size_t json_len;
-          json = bson_as_json(documents[doc_index], &json_len);
-          if (!json) printf("Error converting to json\n");
-          printf("%.*s\n", (int)json_len, json);
-
           if (!documents[doc_index]) {
-            err = OP_MSG_SECTION_MALLOC_ERROR;
-            break;
+            err = OP_MSG_SECTION_MALLOC_ERROR; // TODO: BSON_DESERIALIZE_ERROR
+            goto cleanup;
           }
 
           cursor += doc_size;
@@ -189,40 +187,38 @@ OpMsgSectionDeserializeError decode_op_msg_sections(const uint8_t *cursor, size_
           doc_index++;
         }
 
-        (sections + section_index)->section_kind = SECTION_KIND_1;
-        (sections + section_index)->section.kind1_section.size = section_size;
-        (sections + section_index)->section.kind1_section.document_sequence_identifier
-          = document_sequence_identifier;
-
-        (sections + section_index)->section.kind1_section.document_sequence_identifier_len
-          = document_sequence_identifier_len;
-
-        (sections + section_index)->section.kind1_section.documents = documents;
-        (sections + section_index)->section.kind1_section.documents_len = doc_count;
-        
         break;
       }
 
       default:
         err = OP_MSG_SECTION_INVALID_SECTION_KIND;
-        break;
+        goto cleanup;
     }
 
-    if (!err) section_index++;
+    section_index++;
   }
 
-  if (!err) {
-    wire_msg->payload.msg.sections = sections;
-    wire_msg->payload.msg.sections_len = section_count;
-  } else {
-    for (int i = 0; i < section_index; i++) {
-      if ((sections + i)->section_kind == SECTION_KIND_0) {
-        free((sections + i)->section.kind0_section.document);
-      }
+  wire_msg->payload.msg.sections = sections;
+  wire_msg->payload.msg.sections_len = section_count;
+  return OP_MSG_SECTION_DESERIALIZE_SUCCESS;
 
-      if ((sections + i)->section_kind == SECTION_KIND_1) {
-        free((sections + i)->section.kind1_section.document_sequence_identifier);
-        free((sections + i)->section.kind1_section.documents);
+cleanup:
+  if (sections) {
+    for (int i = 0; i < section_index && i < section_count; i++) {
+      if (sections[i].section_kind == SECTION_KIND_0) {
+        if (sections[i].section.kind0_section.document) {
+          bson_destroy(sections[i].section.kind0_section.document);
+        }
+      } else if (sections[i].section_kind == SECTION_KIND_1) {
+        free(sections[i].section.kind1_section.document_sequence_identifier);
+        if (sections[i].section.kind1_section.documents) {
+          for (size_t j = 0; j < sections[i].section.kind1_section.documents_len; j++) {
+            if (sections[i].section.kind1_section.documents[j]) {
+              bson_destroy(sections[i].section.kind1_section.documents[j]);
+            }
+          }
+          free(sections[i].section.kind1_section.documents);
+        }
       }
     }
     free(sections);

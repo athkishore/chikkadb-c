@@ -164,7 +164,7 @@ static bool try_one_request(Conn *conn) {
   if (err) {
     printf("Error: %d\n", err);
     // What to do with buf?
-    // return false;
+    return false;
   } else {
     char *json;
     size_t json_len;
@@ -193,7 +193,7 @@ static bool try_one_request(Conn *conn) {
     }
   }
   
-  buf_consume(&conn->incoming, 4 + len);
+  buf_consume(&conn->incoming, len);
   return true;
 }
 
